@@ -95,72 +95,138 @@ USRP_UHD_i::~USRP_UHD_i()
         
     Ports:
 
-        Data is passed to the serviceFunction through the getPacket call (BULKIO only).
-        The dataTransfer class is a port-specific class, so each port implementing the
-        BULKIO interface will have its own type-specific dataTransfer.
+        Data is passed to the serviceFunction through by reading from input streams
+        (BulkIO only). The input stream class is a port-specific class, so each port
+        implementing the BulkIO interface will have its own type-specific input stream.
+        UDP multicast (dataSDDS and dataVITA49) and string-based (dataString, dataXML and
+        dataFile) do not support streams.
 
-        The argument to the getPacket function is a floating point number that specifies
-        the time to wait in seconds. A zero value is non-blocking. A negative value
+        The input stream from which to read can be requested with the getCurrentStream()
+        method. The optional argument to getCurrentStream() is a floating point number that
+        specifies the time to wait in seconds. A zero value is non-blocking. A negative value
         is blocking.  Constants have been defined for these values, bulkio::Const::BLOCKING and
         bulkio::Const::NON_BLOCKING.
 
-        Each received dataTransfer is owned by serviceFunction and *MUST* be
-        explicitly deallocated.
+        More advanced uses of input streams are possible; refer to the REDHAWK documentation
+        for more details.
 
-        To send data using a BULKIO interface, a convenience interface has been added 
-        that takes a std::vector as the data input
+        Input streams return data blocks that automatically manage the memory for the data
+        and include the SRI that was in effect at the time the data was received. It is not
+        necessary to delete the block; it will be cleaned up when it goes out of scope.
 
-        NOTE: If you have a BULKIO dataSDDS port, you must manually call 
+        To send data using a BulkIO interface, create an output stream and write the
+        data to it. When done with the output stream, the close() method sends and end-of-
+        stream flag and cleans up.
+
+        NOTE: If you have a BULKIO dataSDDS or dataVITA49  port, you must manually call 
               "port->updateStats()" to update the port statistics when appropriate.
 
         Example:
-            // this example assumes that the device has two ports:
-            //  A provides (input) port of type bulkio::InShortPort called short_in
-            //  A uses (output) port of type bulkio::OutFloatPort called float_out
+            // This example assumes that the device has two ports:
+            //  An input (provides) port of type bulkio::InShortPort called dataShort_in
+            //  An output (uses) port of type bulkio::OutFloatPort called dataFloat_out
             // The mapping between the port and the class is found
             // in the device base class header file
+            // The device class must have an output stream member; add to
+            // temp.h:
+            //   bulkio::OutFloatStream outputStream;
 
-            bulkio::InShortPort::dataTransfer *tmp = short_in->getPacket(bulkio::Const::BLOCKING);
-            if (not tmp) { // No data is available
+            bulkio::InShortStream inputStream = dataShort_in->getCurrentStream();
+            if (!inputStream) { // No streams are available
                 return NOOP;
             }
 
+            bulkio::ShortDataBlock block = inputStream.read();
+            if (!block) { // No data available
+                // Propagate end-of-stream
+                if (inputStream.eos()) {
+                   outputStream.close();
+                }
+                return NOOP;
+            }
+
+            short* inputData = block.data();
             std::vector<float> outputData;
-            outputData.resize(tmp->dataBuffer.size());
-            for (unsigned int i=0; i<tmp->dataBuffer.size(); i++) {
-                outputData[i] = (float)tmp->dataBuffer[i];
+            outputData.resize(block.size());
+            for (size_t index = 0; index < block.size(); ++index) {
+                outputData[index] = (float) inputData[index];
             }
 
-            // NOTE: You must make at least one valid pushSRI call
-            if (tmp->sriChanged) {
-                float_out->pushSRI(tmp->SRI);
+            // If there is no output stream open, create one
+            if (!outputStream) {
+                outputStream = dataFloat_out->createStream(block.sri());
+            } else if (block.sriChanged()) {
+                // Update output SRI
+                outputStream.sri(block.sri());
             }
-            float_out->pushPacket(outputData, tmp->T, tmp->EOS, tmp->streamID);
 
-            delete tmp; // IMPORTANT: MUST RELEASE THE RECEIVED DATA BLOCK
+            // Write to the output stream
+            outputStream.write(outputData, block.getTimestamps());
+
+            // Propagate end-of-stream
+            if (inputStream.eos()) {
+              outputStream.close();
+            }
+
             return NORMAL;
 
         If working with complex data (i.e., the "mode" on the SRI is set to
-        true), the std::vector passed from/to BulkIO can be typecast to/from
-        std::vector< std::complex<dataType> >.  For example, for short data:
+        true), the data block's complex() method will return true. Data blocks
+        provide functions that return the correct interpretation of the data
+        buffer and number of complex elements:
 
-            bulkio::InShortPort::dataTransfer *tmp = myInput->getPacket(bulkio::Const::BLOCKING);
-            std::vector<std::complex<short> >* intermediate = (std::vector<std::complex<short> >*) &(tmp->dataBuffer);
-            // do work here
-            std::vector<short>* output = (std::vector<short>*) intermediate;
-            myOutput->pushPacket(*output, tmp->T, tmp->EOS, tmp->streamID);
+            if (block.complex()) {
+                std::complex<short>* data = block.cxdata();
+                for (size_t index = 0; index < block.cxsize(); ++index) {
+                    data[index] = std::abs(data[index]);
+                }
+                outputStream.write(data, block.cxsize(), bulkio::time::utils::now());
+            }
 
         Interactions with non-BULKIO ports are left up to the device developer's discretion
+        
+    Messages:
+    
+        To receive a message, you need (1) an input port of type MessageEvent, (2) a message prototype described
+        as a structure property of kind message, (3) a callback to service the message, and (4) to register the callback
+        with the input port.
+        
+        Assuming a property of type message is declared called "my_msg", an input port called "msg_input" is declared of
+        type MessageEvent, create the following code:
+        
+        void temp_i::my_message_callback(const std::string& id, const my_msg_struct &msg){
+        }
+        
+        Register the message callback onto the input port with the following form:
+        this->msg_input->registerMessage("my_msg", this, &temp_i::my_message_callback);
+        
+        To send a message, you need to (1) create a message structure, (2) a message prototype described
+        as a structure property of kind message, and (3) send the message over the port.
+        
+        Assuming a property of type message is declared called "my_msg", an output port called "msg_output" is declared of
+        type MessageEvent, create the following code:
+        
+        ::my_msg_struct msg_out;
+        this->msg_output->sendMessage(msg_out);
 
+    Accessing the Device Manager and Domain Manager:
+    
+        Both the Device Manager hosting this Device and the Domain Manager hosting
+        the Device Manager are available to the Device.
+        
+        To access the Domain Manager:
+            CF::DomainManager_ptr dommgr = this->getDomainManager()->getRef();
+        To access the Device Manager:
+            CF::DeviceManager_ptr devmgr = this->getDeviceManager()->getRef();
+    
     Properties:
         
         Properties are accessed directly as member variables. For example, if the
         property name is "baudRate", it may be accessed within member functions as
-        "baudRate". Unnamed properties are given a generated name of the form
-        "prop_n", where "n" is the ordinal number of the property in the PRF file.
+        "baudRate". Unnamed properties are given the property id as its name.
         Property types are mapped to the nearest C++ type, (e.g. "string" becomes
         "std::string"). All generated properties are declared in the base class
-        (USRP_UHD_base).
+        (temp_base).
     
         Simple sequence properties are mapped to "std::vector" of the simple type.
         Struct properties, if used, are mapped to C++ structs defined in the
@@ -181,33 +247,67 @@ USRP_UHD_i::~USRP_UHD_i()
             
         Callback methods can be associated with a property so that the methods are
         called each time the property value changes.  This is done by calling 
-        addPropertyChangeListener(<property name>, this, &USRP_UHD_i::<callback method>)
+        addPropertyListener(<property>, this, &temp_i::<callback method>)
         in the constructor.
 
-        Callback methods should take two arguments, both const pointers to the value
-        type (e.g., "const float *"), and return void.
+        The callback method receives two arguments, the old and new values, and
+        should return nothing (void). The arguments can be passed by value,
+        receiving a copy (preferred for primitive types), or by const reference
+        (preferred for strings, structs and vectors).
 
         Example:
             // This example makes use of the following Properties:
             //  - A float value called scaleValue
+            //  - A struct property called status
             
-        //Add to USRP_UHD.cpp
-        USRP_UHD_i::USRP_UHD_i(const char *uuid, const char *label) :
-            USRP_UHD_base(uuid, label)
+        //Add to temp.cpp
+        temp_i::temp_i(const char *uuid, const char *label) :
+            temp_base(uuid, label)
         {
-            addPropertyChangeListener("scaleValue", this, &USRP_UHD_i::scaleChanged);
+            addPropertyListener(scaleValue, this, &temp_i::scaleChanged);
+            addPropertyListener(status, this, &temp_i::statusChanged);
         }
 
-        void USRP_UHD_i::scaleChanged(const float *oldValue, const float *newValue)
+        void temp_i::scaleChanged(float oldValue, float newValue)
         {
-            std::cout << "scaleValue changed from" << *oldValue << " to " << *newValue
-                      << std::endl;
+            LOG_DEBUG(temp_i, "scaleValue changed from" << oldValue << " to " << newValue);
         }
             
-        //Add to USRP_UHD.h
-        void scaleChanged(const float* oldValue, const float* newValue);
+        void temp_i::statusChanged(const status_struct& oldValue, const status_struct& newValue)
+        {
+            LOG_DEBUG(temp_i, "status changed");
+        }
+            
+        //Add to temp.h
+        void scaleChanged(float oldValue, float newValue);
+        void statusChanged(const status_struct& oldValue, const status_struct& newValue);
+        
+    Allocation:
+    
+        Allocation callbacks are available to customize the Device's response to 
+        allocation requests. For example, if the Device contains the allocation 
+        property "my_alloc" of type string, the allocation and deallocation
+        callbacks follow the pattern (with arbitrary function names
+        my_alloc_fn and my_dealloc_fn):
+        
+        bool temp_i::my_alloc_fn(const std::string &value)
+        {
+            // perform logic
+            return true; // successful allocation
+        }
+        void temp_i::my_dealloc_fn(const std::string &value)
+        {
+            // perform logic
+        }
+        
+        The allocation and deallocation functions are then registered with the Device
+        base class with the setAllocationImpl call. Note that the variable for the property is used rather
+        than its id:
+        
+        this->setAllocationImpl(my_alloc, this, &temp_i::my_alloc_fn, &temp_i::my_dealloc_fn);
         
         
+
 ************************************************************************************************/
 
 /** RECEIVE THREAD **/
@@ -266,7 +366,7 @@ int USRP_UHD_i::serviceFunctionReceive(){
                 BULKIO::StreamSRI sri = create(stream_id, frontend_tuner_status[tuner_id]);
                 sri.mode = 1; // complex
                 //printSRI(&sri,"USRP_UHD_i::serviceFunctionReceive SRI"); // DEBUG
-                dataShort_out->pushSRI(sri);
+                bulkio_rx_streamers[frontend_tuner_status[tuner_id].tuner_number].sri(sri);
                 dataSDDS_out->pushSRI(sri);
                 usrp_tuners[tuner_id].update_sri = false;
             }
@@ -278,7 +378,7 @@ int USRP_UHD_i::serviceFunctionReceive(){
             }
             // Only push on active ports
             if(dataShort_out->isActive()){
-                dataShort_out->pushPacket(usrp_tuners[tuner_id].output_buffer, usrp_tuners[tuner_id].output_buffer_time, false, stream_id);
+                bulkio_rx_streamers[frontend_tuner_status[tuner_id].tuner_number].write(usrp_tuners[tuner_id].output_buffer, usrp_tuners[tuner_id].output_buffer_time);
             }
             // Don't check isActive because could be relying on attach override rather than a connection
             // It doesn't actually do anything if the tuner/stream isn't configured for sdds already anyway
@@ -749,7 +849,9 @@ bool USRP_UHD_i::deviceDeleteTuning(frontend_tuner_status_struct_struct &fts, si
     sri.mode = 1; // complex
     //printSRI(&sri,"USRP_UHD_i::deviceDeleteTuning SRI"); // DEBUG
     updateSriTimes(&sri, usrp_tuners[tuner_id].time_up.twsec, usrp_tuners[tuner_id].time_down.twsec, frontend::J1970);
-    dataShort_out->pushSRI(sri);
+    if (!(!bulkio_rx_streamers[frontend_tuner_status[tuner_id].tuner_number])) {
+        bulkio_rx_streamers[frontend_tuner_status[tuner_id].tuner_number].sri(sri);
+    }
     dataSDDS_out->pushSRI(sri);
     usrp_tuners[tuner_id].update_sri = false;
 
@@ -758,9 +860,15 @@ bool USRP_UHD_i::deviceDeleteTuning(frontend_tuner_status_struct_struct &fts, si
                                          << "  buffer_size=" << usrp_tuners[tuner_id].buffer_size
                                          << "  buffer_capacity=" << usrp_tuners[tuner_id].buffer_capacity
                                          << "  output_buffer.size()=" << usrp_tuners[tuner_id].output_buffer.size() );
-    // Only push on active ports
-    if(dataShort_out->isActive()){
-        dataShort_out->pushPacket(usrp_tuners[tuner_id].output_buffer, usrp_tuners[tuner_id].output_buffer_time, true, stream_id);
+
+    // Only cleanup if OutputStream was created
+    if (!(!bulkio_rx_streamers[frontend_tuner_status[tuner_id].tuner_number])) {
+        // Only push on active ports
+        if(dataShort_out->isActive()){
+            bulkio_rx_streamers[frontend_tuner_status[tuner_id].tuner_number].write(usrp_tuners[tuner_id].output_buffer, usrp_tuners[tuner_id].output_buffer_time);
+        }
+        // Close the stream
+        bulkio_rx_streamers[frontend_tuner_status[tuner_id].tuner_number].close();
     }
 
     // Don't check isActive because could be relying on attach override rather than a connection
@@ -868,6 +976,7 @@ void USRP_UHD_i::setNumChannels(size_t num_rx, size_t num_tx){
     usrp_tuners.clear();
     usrp_tuners.resize(num_rx+num_tx);
     usrp_rx_streamers.resize(num_rx);
+    bulkio_rx_streamers.resize(num_rx);
     usrp_tx_streamers.resize(num_tx);
     usrp_tx_streamer_typesize.resize(num_tx);
 
@@ -1728,6 +1837,11 @@ bool USRP_UHD_i::usrpEnable(size_t tuner_id){
         // get stream id (creates one if not already created for this tuner)
         std::string stream_id = getStreamId(tuner_id);
 
+        // Create the bulkio stream
+        if (!bulkio_rx_streamers[frontend_tuner_status[tuner_id].tuner_number]) {
+            bulkio_rx_streamers[frontend_tuner_status[tuner_id].tuner_number] = dataShort_out->createStream(stream_id);
+        }
+
         if(!prev_enabled){
             LOG_DEBUG(USRP_UHD_i,"USRP_UHD_i::usrpEnable|setting update_sri flag for tuner: "<<tuner_id<<" with stream id: "<< stream_id);
 
@@ -1735,7 +1849,7 @@ bool USRP_UHD_i::usrpEnable(size_t tuner_id){
             BULKIO::StreamSRI sri = create(stream_id, frontend_tuner_status[tuner_id]);
             sri.mode = 1; // complex
             //printSRI(&sri,"USRP_UHD_i::usrpEnable SRI"); // DEBUG
-            dataShort_out->pushSRI(sri);
+            bulkio_rx_streamers[frontend_tuner_status[tuner_id].tuner_number].sri(sri);
             dataSDDS_out->pushSRI(sri);
             usrp_tuners[tuner_id].update_sri = false;
         }
@@ -1783,7 +1897,8 @@ bool USRP_UHD_i::usrpDisable(size_t tuner_id){
                                                  << "  output_buffer.size()=" << usrp_tuners[tuner_id].output_buffer.size() );
             // Only push on active ports
             if(dataShort_out->isActive()){
-                dataShort_out->pushPacket(usrp_tuners[tuner_id].output_buffer, usrp_tuners[tuner_id].output_buffer_time, false, stream_id);
+                bulkio_rx_streamers[frontend_tuner_status[tuner_id].tuner_number].write(usrp_tuners[tuner_id].output_buffer, usrp_tuners[tuner_id].output_buffer_time);
+                bulkio_rx_streamers[frontend_tuner_status[tuner_id].tuner_number].close();
             }
             if(dataSDDS_out->isActive()){
                 dataSDDS_out->pushPacket(usrp_tuners[tuner_id].output_buffer, usrp_tuners[tuner_id].output_buffer_time, false, stream_id);

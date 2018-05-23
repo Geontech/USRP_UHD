@@ -302,6 +302,8 @@ class USRP_UHD_i : public USRP_UHD_base
                                                   // each element protected by corresponding usrp_tuners[tuner_id].lock
         std::vector<uhd::rx_streamer::sptr> usrp_rx_streamers; // indices map to usrp_tuners[tuner_id].tuner_number
                                                                // each element protected by corresponding usrp_tuners[tuner_id].lock
+        std::vector<bulkio::OutShortStream> bulkio_rx_streamers; // indices map to usrp_tuners[tuner_id].tuner_number
+                                                                 // each element protected by corresponding usrp_tuners[tuner_id].lock
         std::vector<uhd::tx_streamer::sptr> usrp_tx_streamers; // indices map to usrp_tuners[tuner_id].tuner_number
                                                                // each element protected by corresponding usrp_tuners[tuner_id].lock
         std::vector<size_t> usrp_tx_streamer_typesize; // indices map to usrp_tuners[tuner_id].tuner_number
