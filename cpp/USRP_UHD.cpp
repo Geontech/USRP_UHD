@@ -1296,16 +1296,16 @@ void USRP_UHD_i::updateAvailableDevices(){
     for (size_t i = 0; i < device_addrs.size(); i++) {
         usrp_device_struct availDev;
 
-        BOOST_FOREACH(std::string key, device_addrs[i].keys()) {
-            LOG_DEBUG(USRP_UHD_i,"updateAvailableDevices|i=" << i << " key=" << key << " device_addrs[i].get(key)=" << device_addrs[i].get(key));
-            if (key == "type")
-                availDev.type = device_addrs[i].get(key);
-            else if (key == "addr")
-                availDev.ip_address = device_addrs[i].get(key);
-            else if (key == "name")
-                availDev.name = device_addrs[i].get(key);
-            else if (key == "serial")
-                availDev.serial = device_addrs[i].get(key);
+        for (std::vector<std::string>::const_iterator key_iter = device_addrs[i].keys().begin(); key_iter != device_addrs[i].keys().end(); ++key_iter) {
+            LOG_DEBUG(USRP_UHD_i,"updateAvailableDevices|i=" << i << " *key_iter=" << *key_iter << " device_addrs[i].get(*key_iter)=" << device_addrs[i].get(*key_iter));
+            if (*key_iter == "type")
+                availDev.type = device_addrs[i].get(*key_iter);
+            else if (*key_iter == "addr")
+                availDev.ip_address = device_addrs[i].get(*key_iter);
+            else if (*key_iter == "name")
+                availDev.name = device_addrs[i].get(*key_iter);
+            else if (*key_iter == "serial")
+                availDev.serial = device_addrs[i].get(*key_iter);
         }
         available_devices.push_back(availDev);
     }
