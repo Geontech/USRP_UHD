@@ -1898,7 +1898,6 @@ bool USRP_UHD_i::usrpDisable(size_t tuner_id){
             // Only push on active ports
             if(dataShort_out->isActive()){
                 bulkio_rx_streamers[frontend_tuner_status[tuner_id].tuner_number].write(usrp_tuners[tuner_id].output_buffer, usrp_tuners[tuner_id].output_buffer_time);
-                bulkio_rx_streamers[frontend_tuner_status[tuner_id].tuner_number].close();
             }
             if(dataSDDS_out->isActive()){
                 dataSDDS_out->pushPacket(usrp_tuners[tuner_id].output_buffer, usrp_tuners[tuner_id].output_buffer_time, false, stream_id);
@@ -2281,7 +2280,7 @@ void USRP_UHD_i::setTunerOutputSampleRate(const std::string& allocation_id, doub
             if (frontend::floatingPointCompare(sr,0.0) < 0 ||
                     frontend::floatingPointCompare(sr,device_channels[idx].rate_max) > 0 ){
                 std::ostringstream msg;
-                msg << "setTunerBandwidth|Invalid sample rate (" << sr <<")";
+                msg << "setTunerOutputSampleRate|Invalid sample rate (" << sr <<")";
                 LOG_WARN(USRP_UHD_i,msg.str());
                 throw FRONTEND::BadParameterException(msg.str().c_str());
             }
